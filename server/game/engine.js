@@ -1,325 +1,724 @@
 const Deck = require('./deck');
-const Card = require('./card');
 
 class GameEngine {
     constructor(io) {
         this.io = io;
         this.rooms = new Map();
         this.players = new Map();
-        this.waitingPlayers = [];
+        this.waitingRoom = {
+            players: [],
+            minPlayers: 2,
+            maxPlayers: 6
+        };
     }
 
     addPlayer(socket, playerName) {
         const player = {
             id: socket.id,
-            name: playerName || `Player ${socket.id.substring(0, 4)}`,
+            name: playerName || `Игрок ${socket.id.substring(0, 4)}`,
             socket: socket,
-            health: 30,
-            mana: 1,
-            maxMana: 1,
+            money: 100, // Стартовый капитал
             hand: [],
-            board: [],
-            deck: new Deck()
+            folded: false,
+            tricksWon: 0,
+            currentBet: 0,
+            hasRaznoMast: false,
+            playedNaAzi: false
         };
 
         this.players.set(socket.id, player);
+        this.waitingRoom.players.push(player);
 
-        // Try to match with waiting player
-        if (this.waitingPlayers.length > 0) {
-            const opponent = this.waitingPlayers.shift();
-            this.createGame(player, opponent);
-        } else {
-            this.waitingPlayers.push(player);
-            socket.emit('waiting', { message: 'Waiting for opponent...' });
+        this.broadcastWaitingRoom();
+
+        // Автостарт при 2+ игроках (можно изменить на требование минимум игроков)
+        if (this.waitingRoom.players.length >= this.waitingRoom.minPlayers) {
+            socket.emit('canStart', { playerCount: this.waitingRoom.players.length });
         }
     }
 
-    createGame(player1, player2) {
+    startGame(initiatorId) {
+        if (this.waitingRoom.players.length < 2) {
+            const player = this.players.get(initiatorId);
+            player.socket.emit('error', { message: 'Нужно минимум 2 игрока!' });
+            return;
+        }
+
         const roomId = `room_${Date.now()}`;
+        const playersInGame = [...this.waitingRoom.players];
 
         const gameState = {
             id: roomId,
-            players: [player1, player2],
+            players: playersInGame,
+            activePlayers: playersInGame.map(p => p.id), // Игроки в текущем раунде
+            dealerIndex: 0,
             currentPlayerIndex: 0,
-            turn: 1,
-            status: 'active'
+            deck: new Deck(),
+            trump: null,
+            trumpCard: null,
+            pot: 0,
+            baseBet: 5,
+            currentBet: 5,
+            bettingRound: 0,
+            maxBettingRounds: 3,
+            bettingComplete: false,
+            phase: 'dealing', // dealing, discarding, betting, playing, gameOver
+            currentTrick: [],
+            trickLead: null,
+            tricksPlayed: 0,
+            isReplay: false,
+            replayPlayers: [], // Игроки участвующие в переигровке
+            naAziPairs: [] // Пары игроков которые играют "на ази"
         };
 
         this.rooms.set(roomId, gameState);
-        player1.roomId = roomId;
-        player2.roomId = roomId;
+        this.waitingRoom.players = [];
 
-        // Join socket rooms
-        player1.socket.join(roomId);
-        player2.socket.join(roomId);
+        // Присоединяем игроков к комнате
+        playersInGame.forEach(player => {
+            player.roomId = roomId;
+            player.socket.join(roomId);
+        });
 
-        // Draw initial cards
-        this.drawCards(player1, 4);
-        this.drawCards(player2, 4);
-
-        // Start game
         this.io.to(roomId).emit('gameStart', {
             room: roomId,
-            players: [
-                { id: player1.id, name: player1.name, health: player1.health },
-                { id: player2.id, name: player2.name, health: player2.health }
-            ]
+            players: playersInGame.map(p => ({
+                id: p.id,
+                name: p.name,
+                money: p.money
+            })),
+            baseBet: gameState.baseBet
         });
 
-        this.startTurn(roomId);
+        this.startRound(roomId);
     }
 
-    drawCards(player, count) {
-        for (let i = 0; i < count; i++) {
-            const card = player.deck.draw();
-            if (card) {
-                player.hand.push(card);
-            }
-        }
-
-        player.socket.emit('updateHand', { hand: player.hand });
-    }
-
-    startTurn(roomId) {
+    startRound(roomId) {
         const game = this.rooms.get(roomId);
-        if (!game || game.status !== 'active') return;
-
-        const currentPlayer = game.players[game.currentPlayerIndex];
-
-        // Increase max mana (up to 10)
-        if (currentPlayer.maxMana < 10) {
-            currentPlayer.maxMana++;
-        }
-        currentPlayer.mana = currentPlayer.maxMana;
-
-        // Draw a card
-        this.drawCards(currentPlayer, 1);
-
-        // Reset board cards
-        currentPlayer.board.forEach(card => {
-            card.canAttack = true;
-            card.hasUsedAbility = false;
-        });
-
-        this.io.to(roomId).emit('turnStart', {
-            turn: game.turn,
-            currentPlayerId: currentPlayer.id,
-            playerName: currentPlayer.name
-        });
-
-        this.broadcastGameState(roomId);
-    }
-
-    playCard(playerId, data) {
-        const player = this.players.get(playerId);
-        if (!player) return;
-
-        const game = this.rooms.get(player.roomId);
         if (!game) return;
 
-        const currentPlayer = game.players[game.currentPlayerIndex];
-        if (currentPlayer.id !== playerId) {
-            player.socket.emit('error', { message: 'Not your turn!' });
+        // Сброс состояния игроков
+        game.players.forEach(player => {
+            player.hand = [];
+            player.folded = false;
+            player.tricksWon = 0;
+            player.currentBet = 0;
+            player.hasRaznoMast = false;
+            player.playedNaAzi = false;
+        });
+
+        game.phase = 'dealing';
+        game.currentTrick = [];
+        game.tricksPlayed = 0;
+        game.bettingRound = 0;
+        game.bettingComplete = false;
+        game.currentBet = game.baseBet;
+
+        // Сброс и перемешивание колоды
+        game.deck.reset();
+
+        // Определяем сдатчика
+        const dealer = game.players[game.dealerIndex];
+
+        this.io.to(roomId).emit('roundStart', {
+            dealer: dealer.name,
+            pot: game.pot
+        });
+
+        // Раздаем по 4 карты
+        this.dealCards(roomId);
+
+        // Открываем козырь
+        this.revealTrump(roomId);
+
+        // Переходим к фазе сброса карт
+        game.phase = 'discarding';
+        this.io.to(roomId).emit('phaseChange', { phase: 'discarding' });
+    }
+
+    dealCards(roomId) {
+        const game = this.rooms.get(roomId);
+        if (!game) return;
+
+        const playersToDeal = game.isReplay ?
+            game.players.filter(p => game.replayPlayers.includes(p.id)) :
+            game.players;
+
+        playersToDeal.forEach(player => {
+            for (let i = 0; i < 4; i++) {
+                const card = game.deck.draw();
+                if (card) {
+                    player.hand.push(card);
+                }
+            }
+            player.socket.emit('handDealt', { hand: player.hand });
+        });
+    }
+
+    revealTrump(roomId) {
+        const game = this.rooms.get(roomId);
+        if (!game) return;
+
+        let trumpCard;
+
+        if (game.isReplay && game.replayPlayers.includes(game.players[game.dealerIndex].id)) {
+            // Сдатчик участвует - открывает свою последнюю карту
+            const dealer = game.players[game.dealerIndex];
+            trumpCard = dealer.hand[dealer.hand.length - 1];
+        } else if (game.isReplay) {
+            // Сдатчик не участвует - открывается верхняя карта колоды
+            trumpCard = game.deck.cards[game.deck.cards.length - 1];
+        } else {
+            // Обычная раздача - последняя карта сдатчика
+            const dealer = game.players[game.dealerIndex];
+            trumpCard = dealer.hand[dealer.hand.length - 1];
+        }
+
+        if (trumpCard) {
+            game.trump = trumpCard.suit;
+            game.trumpCard = trumpCard;
+
+            this.io.to(roomId).emit('trumpRevealed', {
+                trump: game.trump,
+                trumpCard: {
+                    rank: trumpCard.rank,
+                    suit: trumpCard.suit
+                }
+            });
+        }
+    }
+
+    playerFold(playerId) {
+        const player = this.players.get(playerId);
+        if (!player || !player.roomId) return;
+
+        const game = this.rooms.get(player.roomId);
+        if (!game || game.phase !== 'discarding') {
+            player.socket.emit('error', { message: 'Нельзя сбросить карты сейчас!' });
             return;
         }
 
-        const cardIndex = data.cardIndex;
+        player.folded = true;
+        player.hand = [];
+
+        this.io.to(player.roomId).emit('playerFolded', {
+            playerId: playerId,
+            playerName: player.name
+        });
+
+        this.checkAllPlayersDiscarded(player.roomId);
+    }
+
+    playerDiscard(playerId, cardIndex) {
+        const player = this.players.get(playerId);
+        if (!player || !player.roomId) return;
+
+        const game = this.rooms.get(player.roomId);
+        if (!game || game.phase !== 'discarding') {
+            player.socket.emit('error', { message: 'Нельзя сбросить карту сейчас!' });
+            return;
+        }
+
+        if (player.folded) {
+            player.socket.emit('error', { message: 'Вы уже сбросили карты!' });
+            return;
+        }
+
+        if (cardIndex < 0 || cardIndex >= player.hand.length) {
+            player.socket.emit('error', { message: 'Неверная карта!' });
+            return;
+        }
+
+        // Сбрасываем одну карту
+        player.hand.splice(cardIndex, 1);
+        player.socket.emit('cardDiscarded', { hand: player.hand });
+
+        this.checkAllPlayersDiscarded(player.roomId);
+    }
+
+    checkAllPlayersDiscarded(roomId) {
+        const game = this.rooms.get(roomId);
+        if (!game) return;
+
+        const allDiscarded = game.players.every(p =>
+            p.folded || p.hand.length === 3
+        );
+
+        if (allDiscarded) {
+            // Переходим к торговле
+            game.phase = 'betting';
+            game.currentPlayerIndex = (game.dealerIndex + 1) % game.players.length;
+
+            this.io.to(roomId).emit('phaseChange', { phase: 'betting' });
+            this.startBetting(roomId);
+        }
+    }
+
+    startBetting(roomId) {
+        const game = this.rooms.get(roomId);
+        if (!game) return;
+
+        // Все игроки вносят базовую ставку
+        game.players.forEach(player => {
+            if (!player.folded) {
+                player.currentBet = game.baseBet;
+                player.money -= game.baseBet;
+                game.pot += game.baseBet;
+            }
+        });
+
+        this.io.to(roomId).emit('bettingStart', {
+            pot: game.pot,
+            currentBet: game.currentBet
+        });
+
+        this.promptNextBet(roomId);
+    }
+
+    promptNextBet(roomId) {
+        const game = this.rooms.get(roomId);
+        if (!game) return;
+
+        // Находим следующего активного игрока
+        let attempts = 0;
+        while (game.players[game.currentPlayerIndex].folded && attempts < game.players.length) {
+            game.currentPlayerIndex = (game.currentPlayerIndex + 1) % game.players.length;
+            attempts++;
+        }
+
+        const currentPlayer = game.players[game.currentPlayerIndex];
+
+        if (!currentPlayer.folded) {
+            currentPlayer.socket.emit('yourTurnToBet', {
+                currentBet: game.currentBet,
+                pot: game.pot,
+                bettingRound: game.bettingRound
+            });
+
+            this.io.to(roomId).emit('playerTurnToBet', {
+                playerId: currentPlayer.id,
+                playerName: currentPlayer.name
+            });
+        }
+    }
+
+    playerBet(playerId, action, raiseAmount = 0) {
+        const player = this.players.get(playerId);
+        if (!player || !player.roomId) return;
+
+        const game = this.rooms.get(player.roomId);
+        if (!game || game.phase !== 'betting') {
+            player.socket.emit('error', { message: 'Сейчас не время для ставок!' });
+            return;
+        }
+
+        if (game.players[game.currentPlayerIndex].id !== playerId) {
+            player.socket.emit('error', { message: 'Не ваша очередь!' });
+            return;
+        }
+
+        if (action === 'fold') {
+            player.folded = true;
+            this.io.to(player.roomId).emit('playerFoldedBetting', {
+                playerId: playerId,
+                playerName: player.name
+            });
+        } else if (action === 'pass') {
+            // Пас - игрок не повышает ставку
+            this.io.to(player.roomId).emit('playerPassed', {
+                playerId: playerId,
+                playerName: player.name
+            });
+        } else if (action === 'raise') {
+            if (game.bettingRound >= game.maxBettingRounds) {
+                player.socket.emit('error', { message: 'Достигнут лимит повышений!' });
+                return;
+            }
+
+            const newBet = game.currentBet + raiseAmount;
+            player.money -= raiseAmount;
+            player.currentBet = newBet;
+            game.pot += raiseAmount;
+            game.currentBet = newBet;
+            game.bettingRound++;
+
+            this.io.to(player.roomId).emit('playerRaised', {
+                playerId: playerId,
+                playerName: player.name,
+                newBet: newBet,
+                pot: game.pot
+            });
+        }
+
+        // Переходим к следующему игроку
+        game.currentPlayerIndex = (game.currentPlayerIndex + 1) % game.players.length;
+
+        // Проверяем, закончена ли торговля
+        const activePlayers = game.players.filter(p => !p.folded);
+        if (activePlayers.length <= 1 || this.checkBettingComplete(roomId)) {
+            this.endBetting(roomId);
+        } else {
+            this.promptNextBet(roomId);
+        }
+    }
+
+    checkBettingComplete(roomId) {
+        const game = this.rooms.get(roomId);
+        if (!game) return false;
+
+        // Торговля завершена если все спасовали или достигнут лимит повышений
+        return game.bettingRound >= game.maxBettingRounds;
+    }
+
+    endBetting(roomId) {
+        const game = this.rooms.get(roomId);
+        if (!game) return;
+
+        game.bettingComplete = true;
+        game.phase = 'playing';
+
+        // Определяем первого игрока (справа от победителя торгов)
+        // Упрощаем: первым ходит игрок слева от сдатчика
+        game.currentPlayerIndex = (game.dealerIndex + 1) % game.players.length;
+        game.trickLead = game.currentPlayerIndex;
+
+        this.io.to(roomId).emit('bettingEnded', {
+            pot: game.pot,
+            startingPlayer: game.players[game.currentPlayerIndex].name
+        });
+
+        this.io.to(roomId).emit('phaseChange', { phase: 'playing' });
+        this.promptNextPlay(roomId);
+    }
+
+    promptNextPlay(roomId) {
+        const game = this.rooms.get(roomId);
+        if (!game) return;
+
+        // Находим следующего активного игрока
+        let attempts = 0;
+        while (game.players[game.currentPlayerIndex].folded && attempts < game.players.length) {
+            game.currentPlayerIndex = (game.currentPlayerIndex + 1) % game.players.length;
+            attempts++;
+        }
+
+        const currentPlayer = game.players[game.currentPlayerIndex];
+
+        if (!currentPlayer.folded) {
+            currentPlayer.socket.emit('yourTurnToPlay', {
+                currentTrick: game.currentTrick,
+                trump: game.trump
+            });
+
+            this.io.to(roomId).emit('playerTurnToPlay', {
+                playerId: currentPlayer.id,
+                playerName: currentPlayer.name
+            });
+        }
+    }
+
+    playCard(playerId, cardIndex) {
+        const player = this.players.get(playerId);
+        if (!player || !player.roomId) return;
+
+        const game = this.rooms.get(player.roomId);
+        if (!game || game.phase !== 'playing') {
+            player.socket.emit('error', { message: 'Сейчас не время играть карты!' });
+            return;
+        }
+
+        if (game.players[game.currentPlayerIndex].id !== playerId) {
+            player.socket.emit('error', { message: 'Не ваша очередь!' });
+            return;
+        }
+
+        if (cardIndex < 0 || cardIndex >= player.hand.length) {
+            player.socket.emit('error', { message: 'Неверная карта!' });
+            return;
+        }
+
         const card = player.hand[cardIndex];
 
-        if (!card) return;
-
-        if (player.mana < card.cost) {
-            player.socket.emit('error', { message: 'Not enough mana!' });
+        // Проверка правил игры карты
+        if (!this.canPlayCard(player, card, game)) {
+            player.socket.emit('error', { message: 'Нельзя сыграть эту карту!' });
             return;
         }
 
-        // Play the card
-        player.mana -= card.cost;
+        // Играем карту
         player.hand.splice(cardIndex, 1);
-
-        if (card.type === 'minion') {
-            card.canAttack = false; // Summoning sickness
-            player.board.push(card);
-        } else if (card.type === 'spell') {
-            this.resolveSpell(player, card, data.targetId, game);
-        }
+        game.currentTrick.push({
+            playerId: playerId,
+            playerName: player.name,
+            card: card
+        });
 
         this.io.to(player.roomId).emit('cardPlayed', {
             playerId: playerId,
+            playerName: player.name,
             card: card,
-            cardIndex: cardIndex
+            currentTrick: game.currentTrick
         });
 
-        this.broadcastGameState(player.roomId);
-    }
+        player.socket.emit('handUpdated', { hand: player.hand });
 
-    attack(playerId, data) {
-        const player = this.players.get(playerId);
-        if (!player) return;
-
-        const game = this.rooms.get(player.roomId);
-        if (!game) return;
-
-        const currentPlayer = game.players[game.currentPlayerIndex];
-        if (currentPlayer.id !== playerId) return;
-
-        const attackerCard = player.board[data.attackerIndex];
-        if (!attackerCard || !attackerCard.canAttack) return;
-
-        const opponent = game.players.find(p => p.id !== playerId);
-
-        if (data.targetIndex !== undefined && data.targetIndex !== null) {
-            // Attack minion
-            const targetCard = opponent.board[data.targetIndex];
-            if (!targetCard) return;
-
-            // Deal damage
-            targetCard.health -= attackerCard.attack;
-            attackerCard.health -= targetCard.attack;
-
-            // Remove dead minions
-            if (targetCard.health <= 0) {
-                opponent.board.splice(data.targetIndex, 1);
-            }
-            if (attackerCard.health <= 0) {
-                player.board.splice(data.attackerIndex, 1);
-            }
+        // Проверяем, завершена ли взятка
+        const activePlayers = game.players.filter(p => !p.folded);
+        if (game.currentTrick.length === activePlayers.length) {
+            this.resolveTrick(player.roomId);
         } else {
-            // Attack player directly
-            opponent.health -= attackerCard.attack;
+            game.currentPlayerIndex = (game.currentPlayerIndex + 1) % game.players.length;
+            this.promptNextPlay(player.roomId);
+        }
+    }
 
-            if (opponent.health <= 0) {
-                this.endGame(player.roomId, player.id);
-                return;
+    canPlayCard(player, card, game) {
+        if (game.currentTrick.length === 0) {
+            // Первый ход - можно играть любую карту
+            return true;
+        }
+
+        const leadCard = game.currentTrick[0].card;
+        const leadSuit = leadCard.suit;
+
+        // Проверяем наличие карт масти хода
+        const hasSameSuit = player.hand.some(c => c.suit === leadSuit);
+
+        if (hasSameSuit && card.suit !== leadSuit) {
+            // Должен играть карту той же масти
+            return false;
+        }
+
+        if (!hasSameSuit) {
+            // Нет карт масти хода
+            const hasTrump = player.hand.some(c => c.suit === game.trump);
+
+            if (hasTrump && card.suit !== game.trump) {
+                // Должен бить козырем
+                // Исключение: правило "разномасть"
+                if (player.hasRaznoMast && card.rank === 'A' && card.suit === game.trump) {
+                    // Может не бить козырным тузом при первом ходе в другую масть
+                    return true;
+                }
+                return false;
             }
         }
 
-        attackerCard.canAttack = false;
-
-        this.io.to(player.roomId).emit('attackPerformed', {
-            attackerId: playerId,
-            attackerIndex: data.attackerIndex,
-            targetIndex: data.targetIndex
-        });
-
-        this.broadcastGameState(player.roomId);
+        return true;
     }
 
-    resolveSpell(player, card, targetId, game) {
-        const opponent = game.players.find(p => p.id !== player.id);
-
-        switch(card.effect) {
-            case 'damage':
-                if (targetId === 'opponent') {
-                    opponent.health -= card.value;
-                } else {
-                    // Damage to specific minion
-                    const target = opponent.board.find(c => c.id === targetId);
-                    if (target) {
-                        target.health -= card.value;
-                        if (target.health <= 0) {
-                            opponent.board = opponent.board.filter(c => c.id !== targetId);
-                        }
-                    }
-                }
-                break;
-            case 'heal':
-                player.health = Math.min(player.health + card.value, 30);
-                break;
-            case 'buff':
-                const buffTarget = player.board.find(c => c.id === targetId);
-                if (buffTarget) {
-                    buffTarget.attack += card.attackBuff || 0;
-                    buffTarget.health += card.healthBuff || 0;
-                }
-                break;
-        }
-    }
-
-    useAbility(playerId, data) {
-        const player = this.players.get(playerId);
-        if (!player) return;
-
-        const game = this.rooms.get(player.roomId);
-        if (!game) return;
-
-        const card = player.board[data.cardIndex];
-        if (!card || !card.ability || card.hasUsedAbility) return;
-
-        // Use ability logic here
-        card.hasUsedAbility = true;
-
-        this.broadcastGameState(player.roomId);
-    }
-
-    endTurn(playerId) {
-        const player = this.players.get(playerId);
-        if (!player) return;
-
-        const game = this.rooms.get(player.roomId);
-        if (!game) return;
-
-        const currentPlayer = game.players[game.currentPlayerIndex];
-        if (currentPlayer.id !== playerId) return;
-
-        // Switch to next player
-        game.currentPlayerIndex = (game.currentPlayerIndex + 1) % game.players.length;
-        game.turn++;
-
-        this.io.to(player.roomId).emit('turnEnded', {
-            playerId: playerId
-        });
-
-        this.startTurn(player.roomId);
-    }
-
-    endGame(roomId, winnerId) {
+    resolveTrick(roomId) {
         const game = this.rooms.get(roomId);
         if (!game) return;
 
-        game.status = 'finished';
+        const leadCard = game.currentTrick[0].card;
+        let winningPlay = game.currentTrick[0];
+
+        // Определяем победителя взятки
+        for (let i = 1; i < game.currentTrick.length; i++) {
+            const play = game.currentTrick[i];
+
+            if (this.cardBeats(play.card, winningPlay.card, leadCard.suit, game.trump)) {
+                winningPlay = play;
+            }
+        }
+
+        const winner = this.players.get(winningPlay.playerId);
+        winner.tricksWon++;
+
+        this.io.to(roomId).emit('trickWon', {
+            winnerId: winner.id,
+            winnerName: winner.name,
+            trick: game.currentTrick,
+            tricksWon: winner.tricksWon
+        });
+
+        game.tricksPlayed++;
+        game.currentTrick = [];
+
+        // Проверяем, выиграл ли кто-то игру (2 взятки)
+        if (winner.tricksWon >= 2) {
+            this.endRound(roomId, winner.id);
+        } else if (this.allCardsPlayed(game)) {
+            // Все карты сыграны, но никто не взял 2 взятки - АЗИ!
+            this.handleAzi(roomId);
+        } else {
+            // Продолжаем игру, победитель взятки ходит первым
+            const winnerIndex = game.players.findIndex(p => p.id === winner.id);
+            game.currentPlayerIndex = winnerIndex;
+            game.trickLead = winnerIndex;
+
+            setTimeout(() => {
+                this.promptNextPlay(roomId);
+            }, 2000);
+        }
+    }
+
+    cardBeats(card, currentWinner, leadSuit, trump) {
+        // Козырь бьет некозырную карту
+        if (card.suit === trump && currentWinner.suit !== trump) {
+            return true;
+        }
+
+        // Некозырь не бьет козырь
+        if (card.suit !== trump && currentWinner.suit === trump) {
+            return false;
+        }
+
+        // Обе козыри или обе некозыри той же масти
+        if (card.suit === currentWinner.suit) {
+            return card.value > currentWinner.value;
+        }
+
+        // Карта не той масти и не козырь - не бьет
+        return false;
+    }
+
+    allCardsPlayed(game) {
+        return game.players.every(p => p.folded || p.hand.length === 0);
+    }
+
+    endRound(roomId, winnerId) {
+        const game = this.rooms.get(roomId);
+        if (!game) return;
 
         const winner = this.players.get(winnerId);
 
-        this.io.to(roomId).emit('gameEnd', {
+        // Проверяем правило "на ази"
+        const playedNaAzi = game.naAziPairs.some(pair =>
+            pair.includes(winnerId)
+        );
+
+        if (playedNaAzi) {
+            this.io.to(roomId).emit('naAziTriggered', {
+                winnerId: winnerId,
+                winnerName: winner.name
+            });
+            // Игрок участвует в переигровке как взявший одну взятку
+            this.handleAzi(roomId);
+            return;
+        }
+
+        // Обычная победа
+        winner.money += game.pot;
+
+        this.io.to(roomId).emit('roundEnd', {
             winnerId: winnerId,
-            winnerName: winner.name
+            winnerName: winner.name,
+            pot: game.pot,
+            winnerMoney: winner.money
         });
 
-        // Cleanup
+        // Сброс состояния
+        game.pot = 0;
+        game.dealerIndex = (game.dealerIndex + 1) % game.players.length;
+
+        // Начинаем новый раунд
         setTimeout(() => {
-            this.rooms.delete(roomId);
-        }, 10000);
+            this.startRound(roomId);
+        }, 5000);
     }
 
-    broadcastGameState(roomId) {
+    handleAzi(roomId) {
         const game = this.rooms.get(roomId);
         if (!game) return;
 
-        game.players.forEach(player => {
-            const opponent = game.players.find(p => p.id !== player.id);
+        // Определяем игроков для переигровки
+        const playersWithOneTrick = game.players.filter(p => p.tricksWon === 1);
+        const playersWithZeroTricks = game.players.filter(p => p.tricksWon === 0 && !p.folded);
 
-            player.socket.emit('gameState', {
-                you: {
-                    health: player.health,
-                    mana: player.mana,
-                    maxMana: player.maxMana,
-                    hand: player.hand,
-                    board: player.board,
-                    deckSize: player.deck.cards.length
-                },
-                opponent: {
-                    health: opponent.health,
-                    mana: opponent.mana,
-                    maxMana: opponent.maxMana,
-                    handSize: opponent.hand.length,
-                    board: opponent.board,
-                    deckSize: opponent.deck.cards.length,
-                    name: opponent.name
-                },
-                turn: game.turn,
-                isYourTurn: game.players[game.currentPlayerIndex].id === player.id
-            });
+        this.io.to(roomId).emit('aziOccurred', {
+            playersWithOneTrick: playersWithOneTrick.map(p => ({ id: p.id, name: p.name })),
+            pot: game.pot
+        });
+
+        // Игроки с 1 взяткой играют бесплатно
+        // Игроки с 0 взяток платят половину кона
+        playersWithZeroTricks.forEach(player => {
+            const halfPot = Math.floor(game.baseBet / 2);
+            player.money -= halfPot;
+            game.pot += halfPot;
+        });
+
+        game.isReplay = true;
+        game.replayPlayers = playersWithOneTrick.map(p => p.id);
+
+        // Переигровка
+        setTimeout(() => {
+            this.startRound(roomId);
+        }, 5000);
+    }
+
+    declareRaznoMast(playerId) {
+        const player = this.players.get(playerId);
+        if (!player || !player.roomId) return;
+
+        const game = this.rooms.get(player.roomId);
+        if (!game) return;
+
+        // Проверяем условия: козырный туз + 2 карты одной масти
+        const hasTrumpAce = player.hand.some(c => c.rank === 'A' && c.suit === game.trump);
+
+        if (!hasTrumpAce) {
+            player.socket.emit('error', { message: 'Нет козырного туза!' });
+            return;
+        }
+
+        // Проверяем наличие двух карт одной масти
+        const suitCounts = {};
+        player.hand.forEach(card => {
+            suitCounts[card.suit] = (suitCounts[card.suit] || 0) + 1;
+        });
+
+        const hasTwoOfSameSuit = Object.values(suitCounts).some(count => count >= 2);
+
+        if (!hasTwoOfSameSuit) {
+            player.socket.emit('error', { message: 'Нет двух карт одной масти!' });
+            return;
+        }
+
+        player.hasRaznoMast = true;
+
+        this.io.to(player.roomId).emit('raznoMastDeclared', {
+            playerId: playerId,
+            playerName: player.name
+        });
+    }
+
+    proposeNaAzi(playerId, targetPlayerId) {
+        const player = this.players.get(playerId);
+        const targetPlayer = this.players.get(targetPlayerId);
+
+        if (!player || !targetPlayer || player.roomId !== targetPlayer.roomId) return;
+
+        const game = this.rooms.get(player.roomId);
+        if (!game) return;
+
+        // Отправляем предложение целевому игроку
+        targetPlayer.socket.emit('naAziProposal', {
+            fromId: playerId,
+            fromName: player.name
+        });
+    }
+
+    acceptNaAzi(playerId, proposerId) {
+        const player = this.players.get(playerId);
+        const proposer = this.players.get(proposerId);
+
+        if (!player || !proposer || player.roomId !== proposer.roomId) return;
+
+        const game = this.rooms.get(player.roomId);
+        if (!game) return;
+
+        // Добавляем пару в список "на ази"
+        game.naAziPairs.push([playerId, proposerId]);
+
+        player.playedNaAzi = true;
+        proposer.playedNaAzi = true;
+
+        this.io.to(player.roomId).emit('naAziAccepted', {
+            player1: player.name,
+            player2: proposer.name
         });
     }
 
@@ -327,24 +726,35 @@ class GameEngine {
         const player = this.players.get(playerId);
         if (!player) return;
 
-        // Remove from waiting list
-        this.waitingPlayers = this.waitingPlayers.filter(p => p.id !== playerId);
+        // Удаляем из комнаты ожидания
+        this.waitingRoom.players = this.waitingRoom.players.filter(p => p.id !== playerId);
+        this.broadcastWaitingRoom();
 
-        // End game if player was in a room
+        // Обработка выхода из активной игры
         if (player.roomId) {
             const game = this.rooms.get(player.roomId);
             if (game) {
-                const opponent = game.players.find(p => p.id !== playerId);
-                if (opponent) {
-                    opponent.socket.emit('opponentDisconnected', {
-                        message: 'Opponent disconnected. You win!'
-                    });
-                }
-                this.rooms.delete(player.roomId);
+                this.io.to(player.roomId).emit('playerLeft', {
+                    playerId: playerId,
+                    playerName: player.name
+                });
+
+                // Можно добавить логику завершения игры при выходе игрока
             }
         }
 
         this.players.delete(playerId);
+    }
+
+    broadcastWaitingRoom() {
+        this.waitingRoom.players.forEach(player => {
+            player.socket.emit('waitingRoomUpdate', {
+                players: this.waitingRoom.players.map(p => ({ id: p.id, name: p.name, money: p.money })),
+                count: this.waitingRoom.players.length,
+                minPlayers: this.waitingRoom.minPlayers,
+                maxPlayers: this.waitingRoom.maxPlayers
+            });
+        });
     }
 }
 

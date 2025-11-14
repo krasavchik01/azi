@@ -2,20 +2,30 @@ class AZIGame {
     constructor() {
         this.socket = io();
         this.playerName = '';
-        this.gameState = null;
-        this.selectedCard = null;
-        this.selectedBoardCard = null;
+        this.myId = null;
+        this.gameState = {
+            players: [],
+            trump: null,
+            pot: 0,
+            phase: '',
+            currentPlayerId: null
+        };
+        this.myHand = [];
+        this.myMoney = 100;
+        this.currentTrick = [];
+        this.selectedCardIndex = null;
+
         this.setupEventListeners();
         this.setupSocketListeners();
     }
 
     setupEventListeners() {
-        // Login
+        // Join button
         document.getElementById('joinButton').addEventListener('click', () => {
             const name = document.getElementById('playerName').value.trim();
             if (name) {
                 this.playerName = name;
-                this.joinGame();
+                this.joinWaitingRoom();
             } else {
                 alert('Пожалуйста, введите ваше имя!');
             }
@@ -28,84 +38,390 @@ class AZIGame {
             }
         });
 
-        // End turn
-        document.getElementById('endTurnBtn').addEventListener('click', () => {
-            this.socket.emit('endTurn');
+        // Start game button
+        document.getElementById('startGameBtn').addEventListener('click', () => {
+            this.socket.emit('startGame');
         });
 
-        // Play again
-        document.getElementById('playAgainBtn').addEventListener('click', () => {
-            location.reload();
+        // Action buttons
+        document.getElementById('foldBtn').addEventListener('click', () => {
+            this.socket.emit('fold');
+        });
+
+        document.getElementById('passBtn').addEventListener('click', () => {
+            this.socket.emit('bet', { action: 'pass' });
+        });
+
+        document.getElementById('raiseBtn').addEventListener('click', () => {
+            const amount = parseInt(document.getElementById('raiseAmount').value) || 5;
+            this.socket.emit('bet', { action: 'raise', raiseAmount: amount });
+        });
+
+        document.getElementById('raznoMastBtn').addEventListener('click', () => {
+            this.socket.emit('declareRaznoMast');
         });
     }
 
     setupSocketListeners() {
-        this.socket.on('waiting', (data) => {
-            this.showScreen('waitingScreen');
-            this.log('Ожидание противника...');
+        this.socket.on('connect', () => {
+            this.myId = this.socket.id;
+        });
+
+        this.socket.on('waitingRoomUpdate', (data) => {
+            this.updateWaitingRoom(data);
+        });
+
+        this.socket.on('canStart', (data) => {
+            document.getElementById('startGameBtn').disabled = false;
         });
 
         this.socket.on('gameStart', (data) => {
-            this.log('Игра началась! Удачи!');
+            this.log('Игра началась!', true);
+            this.gameState.players = data.players;
             this.showScreen('gameScreen');
-            const opponent = data.players.find(p => p.id !== this.socket.id);
-            document.querySelector('.opponent-area .player-name').textContent = opponent.name;
         });
 
-        this.socket.on('gameState', (state) => {
-            this.gameState = state;
-            this.updateUI();
+        this.socket.on('roundStart', (data) => {
+            this.log(`Новый раунд! Сдает: ${data.dealer}`, true);
+            this.updatePot(data.pot);
         });
 
-        this.socket.on('turnStart', (data) => {
-            if (data.currentPlayerId === this.socket.id) {
-                this.log(`Ваш ход! Ход ${data.turn}`);
-                this.updateTurnIndicator(true);
-            } else {
-                this.log(`Ход противника: ${data.playerName}`);
-                this.updateTurnIndicator(false);
-            }
+        this.socket.on('handDealt', (data) => {
+            this.myHand = data.hand;
+            this.renderHand();
+            this.log('Вам раздали карты');
+        });
+
+        this.socket.on('trumpRevealed', (data) => {
+            this.gameState.trump = data.trump;
+            this.updateTrump(data.trumpCard);
+            this.log(`Козырь: ${this.getCardString(data.trumpCard)}`, true);
+        });
+
+        this.socket.on('phaseChange', (data) => {
+            this.gameState.phase = data.phase;
+            this.updatePhase(data.phase);
+            this.updateActionButtons();
+        });
+
+        this.socket.on('playerFolded', (data) => {
+            this.log(`${data.playerName} сбросил карты`);
+        });
+
+        this.socket.on('cardDiscarded', (data) => {
+            this.myHand = data.hand;
+            this.renderHand();
+            this.log('Вы сбросили карту');
+        });
+
+        this.socket.on('bettingStart', (data) => {
+            this.updatePot(data.pot);
+            this.log('Торговля началась!', true);
+        });
+
+        this.socket.on('yourTurnToBet', (data) => {
+            this.log('Ваш ход делать ставку!', true);
+            this.showBettingButtons(data);
+        });
+
+        this.socket.on('playerTurnToBet', (data) => {
+            this.gameState.currentPlayerId = data.playerId;
+            this.log(`${data.playerName} делает ставку...`);
+            this.updateCurrentPlayer();
+        });
+
+        this.socket.on('playerPassed', (data) => {
+            this.log(`${data.playerName} спасовал`);
+        });
+
+        this.socket.on('playerRaised', (data) => {
+            this.updatePot(data.pot);
+            this.log(`${data.playerName} повысил до ${data.newBet}₽`, true);
+        });
+
+        this.socket.on('playerFoldedBetting', (data) => {
+            this.log(`${data.playerName} вышел из торговли`);
+        });
+
+        this.socket.on('bettingEnded', (data) => {
+            this.updatePot(data.pot);
+            this.log(`Торговля завершена! Первым ходит: ${data.startingPlayer}`, true);
+        });
+
+        this.socket.on('yourTurnToPlay', (data) => {
+            this.log('Ваш ход играть карту!', true);
+            this.enableCardSelection();
+        });
+
+        this.socket.on('playerTurnToPlay', (data) => {
+            this.gameState.currentPlayerId = data.playerId;
+            this.log(`${data.playerName} ходит...`);
+            this.updateCurrentPlayer();
         });
 
         this.socket.on('cardPlayed', (data) => {
-            const isYou = data.playerId === this.socket.id;
-            this.log(`${isYou ? 'Вы' : 'Противник'} сыграли карту: ${data.card.name}`);
-            this.playCardAnimation();
+            this.log(`${data.playerName} сыграл ${this.getCardString(data.card)}`);
+            this.currentTrick = data.currentTrick;
+            this.renderCurrentTrick();
         });
 
-        this.socket.on('attackPerformed', (data) => {
-            const isYou = data.attackerId === this.socket.id;
-            this.log(`${isYou ? 'Вы' : 'Противник'} атаковали!`);
-            this.playAttackAnimation();
+        this.socket.on('handUpdated', (data) => {
+            this.myHand = data.hand;
+            this.renderHand();
         });
 
-        this.socket.on('turnEnded', (data) => {
-            const isYou = data.playerId === this.socket.id;
-            this.log(`${isYou ? 'Вы' : 'Противник'} закончили ход`);
+        this.socket.on('trickWon', (data) => {
+            this.log(`${data.winnerName} взял взятку! (Всего: ${data.tricksWon})`, true);
+            setTimeout(() => {
+                this.currentTrick = [];
+                this.renderCurrentTrick();
+            }, 2000);
         });
 
-        this.socket.on('gameEnd', (data) => {
-            const isWinner = data.winnerId === this.socket.id;
-            this.showEndScreen(isWinner, data.winnerName);
+        this.socket.on('roundEnd', (data) => {
+            this.log(`${data.winnerName} выиграл раунд и получил ${data.pot}₽!`, true);
+            if (data.winnerId === this.myId) {
+                this.myMoney = data.winnerMoney;
+                this.updateMoney();
+            }
         });
 
-        this.socket.on('opponentDisconnected', (data) => {
-            alert(data.message);
-            this.showEndScreen(true, 'Вы');
+        this.socket.on('aziOccurred', (data) => {
+            this.log('АЗИ! Никто не взял 2 взятки. Переигровка!', true);
+            this.updatePot(data.pot);
+        });
+
+        this.socket.on('naAziTriggered', (data) => {
+            this.log(`${data.winnerName} сыграл "на ази" - участвует в переигровке!`);
+        });
+
+        this.socket.on('raznoMastDeclared', (data) => {
+            this.log(`${data.playerName} объявил "Разномасть"!`, true);
+        });
+
+        this.socket.on('naAziProposal', (data) => {
+            if (confirm(`${data.fromName} предлагает сыграть "на ази". Принять?`)) {
+                this.socket.emit('acceptNaAzi', data.fromId);
+            }
+        });
+
+        this.socket.on('naAziAccepted', (data) => {
+            this.log(`${data.player1} и ${data.player2} играют "на ази"!`, true);
+        });
+
+        this.socket.on('playerLeft', (data) => {
+            this.log(`${data.playerName} покинул игру`);
         });
 
         this.socket.on('error', (data) => {
-            this.log(`❌ ${data.message}`);
-            this.shake();
-        });
-
-        this.socket.on('updateHand', (data) => {
-            // Hand is updated via gameState
+            alert(data.message);
+            this.log(`Ошибка: ${data.message}`);
         });
     }
 
-    joinGame() {
-        this.socket.emit('joinGame', this.playerName);
+    joinWaitingRoom() {
+        this.socket.emit('joinWaitingRoom', this.playerName);
+        this.showScreen('waitingScreen');
+    }
+
+    updateWaitingRoom(data) {
+        const playersList = document.getElementById('playersList');
+        const playersCount = document.getElementById('playersCount');
+
+        playersCount.textContent = data.count;
+
+        playersList.innerHTML = '';
+        data.players.forEach(player => {
+            const playerItem = document.createElement('div');
+            playerItem.className = 'player-item';
+            playerItem.innerHTML = `
+                <span>${player.name}</span>
+                <span>${player.money}₽</span>
+            `;
+            playersList.appendChild(playerItem);
+        });
+
+        if (data.count >= data.minPlayers) {
+            document.getElementById('startGameBtn').disabled = false;
+        }
+    }
+
+    renderHand() {
+        const handEl = document.getElementById('playerHand');
+        handEl.innerHTML = '';
+
+        this.myHand.forEach((card, index) => {
+            const cardEl = this.createCardElement(card);
+            cardEl.addEventListener('click', () => this.onCardClick(index));
+
+            if (this.selectedCardIndex === index) {
+                cardEl.classList.add('selected');
+            }
+
+            handEl.appendChild(cardEl);
+        });
+    }
+
+    createCardElement(card) {
+        const cardEl = document.createElement('div');
+        const color = card.getSuitColor();
+        cardEl.className = `card ${color}`;
+
+        const rankTop = document.createElement('div');
+        rankTop.className = 'rank-top';
+        rankTop.textContent = card.rank + card.getSuitSymbol();
+
+        const suitCenter = document.createElement('div');
+        suitCenter.className = 'suit-center';
+        suitCenter.textContent = card.getSuitSymbol();
+
+        const rankBottom = document.createElement('div');
+        rankBottom.className = 'rank-bottom';
+        rankBottom.textContent = card.rank + card.getSuitSymbol();
+
+        cardEl.appendChild(rankTop);
+        cardEl.appendChild(suitCenter);
+        cardEl.appendChild(rankBottom);
+
+        return cardEl;
+    }
+
+    onCardClick(index) {
+        if (this.gameState.phase === 'discarding') {
+            // Discard this card
+            this.socket.emit('discardCard', index);
+        } else if (this.gameState.phase === 'playing' && this.gameState.currentPlayerId === this.myId) {
+            // Play this card
+            this.socket.emit('playCard', index);
+            this.selectedCardIndex = null;
+        } else {
+            // Just select
+            this.selectedCardIndex = index;
+            this.renderHand();
+        }
+    }
+
+    renderCurrentTrick() {
+        const trickEl = document.getElementById('currentTrick');
+        trickEl.innerHTML = '';
+
+        this.currentTrick.forEach(play => {
+            const trickCard = document.createElement('div');
+            trickCard.className = 'trick-card';
+
+            const label = document.createElement('div');
+            label.className = 'player-label';
+            label.textContent = play.playerName;
+
+            const cardEl = this.createCardElement(play.card);
+            cardEl.style.cursor = 'default';
+
+            trickCard.appendChild(label);
+            trickCard.appendChild(cardEl);
+            trickEl.appendChild(trickCard);
+        });
+    }
+
+    updateTrump(trumpCard) {
+        const trumpDisplay = document.getElementById('trumpDisplay');
+        trumpDisplay.textContent = this.getCardString(trumpCard);
+    }
+
+    updatePot(pot) {
+        this.gameState.pot = pot;
+        document.getElementById('potDisplay').textContent = pot + '₽';
+    }
+
+    updateMoney() {
+        document.getElementById('moneyDisplay').textContent = this.myMoney + '₽';
+    }
+
+    updatePhase(phase) {
+        const phaseNames = {
+            'dealing': 'Раздача',
+            'discarding': 'Сброс карты',
+            'betting': 'Торговля',
+            'playing': 'Розыгрыш'
+        };
+        document.getElementById('phaseDisplay').textContent = phaseNames[phase] || phase;
+    }
+
+    updateActionButtons() {
+        // Hide all buttons
+        document.getElementById('foldBtn').style.display = 'none';
+        document.getElementById('passBtn').style.display = 'none';
+        document.getElementById('raiseBtn').style.display = 'none';
+        document.getElementById('raiseAmount').style.display = 'none';
+        document.getElementById('raznoMastBtn').style.display = 'none';
+
+        if (this.gameState.phase === 'discarding') {
+            document.getElementById('foldBtn').style.display = 'inline-block';
+        }
+    }
+
+    showBettingButtons(data) {
+        document.getElementById('passBtn').style.display = 'inline-block';
+
+        if (data.bettingRound < 3) {
+            document.getElementById('raiseBtn').style.display = 'inline-block';
+            document.getElementById('raiseAmount').style.display = 'inline-block';
+        }
+
+        document.getElementById('foldBtn').style.display = 'inline-block';
+    }
+
+    enableCardSelection() {
+        // Cards are already clickable
+    }
+
+    updateCurrentPlayer() {
+        const otherPlayers = document.getElementById('otherPlayers');
+        otherPlayers.innerHTML = '';
+
+        this.gameState.players.forEach(player => {
+            if (player.id !== this.myId) {
+                const playerBox = document.createElement('div');
+                playerBox.className = 'player-box';
+
+                if (player.id === this.gameState.currentPlayerId) {
+                    playerBox.classList.add('active');
+                }
+
+                playerBox.innerHTML = `
+                    <div class="name">${player.name}</div>
+                    <div class="money">${player.money}₽</div>
+                `;
+
+                otherPlayers.appendChild(playerBox);
+            }
+        });
+    }
+
+    getCardString(card) {
+        return card.rank + this.getSuitSymbol(card.suit);
+    }
+
+    getSuitSymbol(suit) {
+        const symbols = {
+            'hearts': '♥',
+            'diamonds': '♦',
+            'clubs': '♣'
+        };
+        return symbols[suit] || suit;
+    }
+
+    log(message, important = false) {
+        const logEl = document.getElementById('gameLog');
+        const entry = document.createElement('div');
+        entry.className = 'log-entry' + (important ? ' important' : '');
+        entry.textContent = `• ${message}`;
+        logEl.appendChild(entry);
+        logEl.scrollTop = logEl.scrollHeight;
+
+        // Keep only last 20 messages
+        while (logEl.children.length > 20) {
+            logEl.removeChild(logEl.firstChild);
+        }
     }
 
     showScreen(screenId) {
@@ -114,278 +430,7 @@ class AZIGame {
         });
         document.getElementById(screenId).classList.add('active');
     }
-
-    updateUI() {
-        if (!this.gameState) return;
-
-        // Update player stats
-        document.getElementById('playerHealth').textContent = this.gameState.you.health;
-        document.getElementById('playerMana').textContent = this.gameState.you.mana;
-        document.getElementById('playerMaxMana').textContent = this.gameState.you.maxMana;
-        document.getElementById('playerDeck').textContent = this.gameState.you.deckSize;
-
-        // Update opponent stats
-        document.getElementById('opponentHealth').textContent = this.gameState.opponent.health;
-        document.getElementById('opponentMana').textContent = this.gameState.opponent.mana;
-        document.getElementById('opponentMaxMana').textContent = this.gameState.opponent.maxMana;
-        document.getElementById('opponentDeck').textContent = this.gameState.opponent.deckSize;
-
-        // Update hand
-        this.renderHand();
-
-        // Update boards
-        this.renderBoard('playerBoard', this.gameState.you.board, true);
-        this.renderBoard('opponentBoard', this.gameState.opponent.board, false);
-
-        // Update opponent hand count
-        this.renderOpponentHand(this.gameState.opponent.handSize);
-
-        // Update end turn button
-        const endTurnBtn = document.getElementById('endTurnBtn');
-        endTurnBtn.disabled = !this.gameState.isYourTurn;
-    }
-
-    renderHand() {
-        const handEl = document.getElementById('playerHand');
-        handEl.innerHTML = '';
-
-        this.gameState.you.hand.forEach((card, index) => {
-            const cardEl = this.createCardElement(card, true);
-            cardEl.addEventListener('click', () => {
-                if (this.gameState.isYourTurn) {
-                    this.playCard(index, card);
-                }
-            });
-            handEl.appendChild(cardEl);
-        });
-    }
-
-    renderBoard(boardId, cards, isPlayer) {
-        const boardEl = document.getElementById(boardId);
-        boardEl.innerHTML = '';
-
-        cards.forEach((card, index) => {
-            const cardEl = this.createCardElement(card, false);
-
-            if (isPlayer && this.gameState.isYourTurn && card.canAttack) {
-                cardEl.classList.add('can-attack');
-                cardEl.addEventListener('click', () => {
-                    this.selectBoardCard(index, card);
-                });
-            }
-
-            if (!isPlayer && this.selectedBoardCard !== null) {
-                cardEl.addEventListener('click', () => {
-                    this.attackTarget(index);
-                });
-                cardEl.style.cursor = 'crosshair';
-            }
-
-            boardEl.appendChild(cardEl);
-        });
-
-        // Allow attacking opponent directly
-        if (isPlayer === false && this.selectedBoardCard !== null) {
-            boardEl.style.cursor = 'crosshair';
-            boardEl.addEventListener('click', (e) => {
-                if (e.target === boardEl) {
-                    this.attackTarget(null);
-                }
-            });
-        }
-    }
-
-    renderOpponentHand(count) {
-        const handEl = document.querySelector('.opponent-hand .card-back-container');
-        handEl.innerHTML = '';
-
-        for (let i = 0; i < count; i++) {
-            const cardBack = document.createElement('div');
-            cardBack.className = 'card-back';
-            cardBack.textContent = '🎴';
-            handEl.appendChild(cardBack);
-        }
-    }
-
-    createCardElement(card, isInHand) {
-        const cardEl = document.createElement('div');
-        cardEl.className = `card ${card.element} ${card.rarity}`;
-
-        if (isInHand) {
-            cardEl.classList.add('card-draw-animation');
-        }
-
-        const costEl = document.createElement('div');
-        costEl.className = 'card-cost';
-        costEl.textContent = card.cost;
-
-        const nameEl = document.createElement('div');
-        nameEl.className = 'card-name';
-        nameEl.textContent = card.name;
-
-        const imageEl = document.createElement('div');
-        imageEl.className = 'card-image';
-        imageEl.textContent = this.getElementEmoji(card.element);
-
-        cardEl.appendChild(costEl);
-        cardEl.appendChild(nameEl);
-        cardEl.appendChild(imageEl);
-
-        if (card.type === 'minion') {
-            const statsEl = document.createElement('div');
-            statsEl.className = 'card-stats';
-
-            const attackEl = document.createElement('div');
-            attackEl.className = 'card-attack';
-            attackEl.textContent = `⚔️ ${card.attack}`;
-
-            const healthEl = document.createElement('div');
-            healthEl.className = 'card-health';
-            healthEl.textContent = `❤️ ${card.health}`;
-
-            statsEl.appendChild(attackEl);
-            statsEl.appendChild(healthEl);
-            cardEl.appendChild(statsEl);
-        } else {
-            const typeEl = document.createElement('div');
-            typeEl.className = 'card-type';
-            typeEl.textContent = '✨ Заклинание';
-            cardEl.appendChild(typeEl);
-        }
-
-        const descEl = document.createElement('div');
-        descEl.className = 'card-description';
-        descEl.textContent = card.description;
-        cardEl.appendChild(descEl);
-
-        return cardEl;
-    }
-
-    getElementEmoji(element) {
-        const emojis = {
-            'fire': '🔥',
-            'water': '💧',
-            'earth': '🌍',
-            'air': '💨'
-        };
-        return emojis[element] || '⭐';
-    }
-
-    playCard(cardIndex, card) {
-        if (this.gameState.you.mana < card.cost) {
-            this.log('❌ Недостаточно маны!');
-            this.shake();
-            return;
-        }
-
-        if (card.type === 'spell') {
-            // For now, spells target opponent
-            this.socket.emit('playCard', {
-                cardIndex: cardIndex,
-                targetId: 'opponent'
-            });
-        } else {
-            this.socket.emit('playCard', {
-                cardIndex: cardIndex
-            });
-        }
-    }
-
-    selectBoardCard(index, card) {
-        this.selectedBoardCard = index;
-        this.log(`Выбрана карта: ${card.name}. Выберите цель атаки.`);
-        this.updateUI(); // Re-render to show attack targets
-    }
-
-    attackTarget(targetIndex) {
-        if (this.selectedBoardCard === null) return;
-
-        this.socket.emit('attack', {
-            attackerIndex: this.selectedBoardCard,
-            targetIndex: targetIndex
-        });
-
-        this.selectedBoardCard = null;
-        this.updateUI();
-    }
-
-    updateTurnIndicator(isYourTurn) {
-        const indicator = document.getElementById('turnIndicator');
-        if (isYourTurn) {
-            indicator.textContent = '⚡ ВАШ ХОД!';
-            indicator.classList.remove('opponent-turn');
-        } else {
-            indicator.textContent = '⏳ Ход противника...';
-            indicator.classList.add('opponent-turn');
-        }
-    }
-
-    log(message) {
-        const logEl = document.getElementById('logMessages');
-        const msgEl = document.createElement('div');
-        msgEl.textContent = `• ${message}`;
-        logEl.appendChild(msgEl);
-        logEl.scrollTop = logEl.scrollHeight;
-
-        // Keep only last 5 messages
-        while (logEl.children.length > 5) {
-            logEl.removeChild(logEl.firstChild);
-        }
-    }
-
-    showEndScreen(isWinner, winnerName) {
-        const resultEl = document.getElementById('endResult');
-        const messageEl = document.getElementById('endMessage');
-
-        if (isWinner) {
-            resultEl.textContent = '🎉 ПОБЕДА! 🎉';
-            resultEl.style.color = '#4ecdc4';
-            messageEl.textContent = `Поздравляем, ${winnerName}! Вы одержали победу!`;
-        } else {
-            resultEl.textContent = '💔 ПОРАЖЕНИЕ 💔';
-            resultEl.style.color = '#ff6b6b';
-            messageEl.textContent = `Победил ${winnerName}. Попробуйте еще раз!`;
-        }
-
-        setTimeout(() => {
-            this.showScreen('endScreen');
-        }, 2000);
-    }
-
-    playCardAnimation() {
-        // Visual feedback
-        document.body.style.animation = 'none';
-        setTimeout(() => {
-            document.body.style.animation = '';
-        }, 10);
-    }
-
-    playAttackAnimation() {
-        // Simple screen shake
-        document.body.style.animation = 'shake 0.5s';
-        setTimeout(() => {
-            document.body.style.animation = '';
-        }, 500);
-    }
-
-    shake() {
-        document.body.style.animation = 'shake 0.3s';
-        setTimeout(() => {
-            document.body.style.animation = '';
-        }, 300);
-    }
 }
-
-// Add shake animation
-const style = document.createElement('style');
-style.textContent = `
-    @keyframes shake {
-        0%, 100% { transform: translateX(0); }
-        25% { transform: translateX(-10px); }
-        75% { transform: translateX(10px); }
-    }
-`;
-document.head.appendChild(style);
 
 // Start game
 const game = new AZIGame();

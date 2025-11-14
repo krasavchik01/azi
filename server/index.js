@@ -15,24 +15,40 @@ const gameEngine = new GameEngine(io);
 io.on('connection', (socket) => {
     console.log(`🎮 Player connected: ${socket.id}`);
 
-    socket.on('joinGame', (playerName) => {
+    socket.on('joinWaitingRoom', (playerName) => {
         gameEngine.addPlayer(socket, playerName);
     });
 
-    socket.on('playCard', (data) => {
-        gameEngine.playCard(socket.id, data);
+    socket.on('startGame', () => {
+        gameEngine.startGame(socket.id);
     });
 
-    socket.on('attack', (data) => {
-        gameEngine.attack(socket.id, data);
+    socket.on('fold', () => {
+        gameEngine.playerFold(socket.id);
     });
 
-    socket.on('endTurn', () => {
-        gameEngine.endTurn(socket.id);
+    socket.on('discardCard', (cardIndex) => {
+        gameEngine.playerDiscard(socket.id, cardIndex);
     });
 
-    socket.on('useAbility', (data) => {
-        gameEngine.useAbility(socket.id, data);
+    socket.on('bet', (data) => {
+        gameEngine.playerBet(socket.id, data.action, data.raiseAmount);
+    });
+
+    socket.on('playCard', (cardIndex) => {
+        gameEngine.playCard(socket.id, cardIndex);
+    });
+
+    socket.on('declareRaznoMast', () => {
+        gameEngine.declareRaznoMast(socket.id);
+    });
+
+    socket.on('proposeNaAzi', (targetPlayerId) => {
+        gameEngine.proposeNaAzi(socket.id, targetPlayerId);
+    });
+
+    socket.on('acceptNaAzi', (proposerId) => {
+        gameEngine.acceptNaAzi(socket.id, proposerId);
     });
 
     socket.on('disconnect', () => {
