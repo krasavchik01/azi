@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>АЗИ - Битва Стихий</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Login Screen -->
+        <div id="loginScreen" class="screen active">
+            <div class="login-container">
+                <h1 class="game-title">
+                    <span class="element fire">А</span><span class="element water">З</span><span class="element earth">И</span>
+                </h1>
+                <h2 class="subtitle">Битва Стихий</h2>
+                <div class="element-symbols">
+                    <span class="symbol fire">🔥</span>
+                    <span class="symbol water">💧</span>
+                    <span class="symbol earth">🌍</span>
+                    <span class="symbol air">💨</span>
+                </div>
+                <input type="text" id="playerName" placeholder="Введите ваше имя" maxlength="20">
+                <button id="joinButton" class="btn btn-primary">Начать Игру</button>
+            </div>
+        </div>
+
+        <!-- Waiting Screen -->
+        <div id="waitingScreen" class="screen">
+            <div class="waiting-container">
+                <h2>Поиск противника...</h2>
+                <div class="spinner"></div>
+                <p>Ожидайте подключения игрока</p>
+            </div>
+        </div>
+
+        <!-- Game Screen -->
+        <div id="gameScreen" class="screen">
+            <!-- Opponent Area -->
+            <div class="player-area opponent-area">
+                <div class="player-info">
+                    <div class="player-name">Противник</div>
+                    <div class="stats">
+                        <span class="health">❤️ <span id="opponentHealth">30</span></span>
+                        <span class="mana">💎 <span id="opponentMana">0</span>/<span id="opponentMaxMana">0</span></span>
+                        <span class="deck">📚 <span id="opponentDeck">30</span></span>
+                    </div>
+                </div>
+                <div class="board opponent-board" id="opponentBoard"></div>
+                <div class="hand opponent-hand">
+                    <div class="card-back-container" id="opponentHand"></div>
+                </div>
+            </div>
+
+            <!-- Battle Log -->
+            <div class="battle-log">
+                <div class="turn-indicator" id="turnIndicator">Ваш ход!</div>
+                <div class="log-messages" id="logMessages"></div>
+            </div>
+
+            <!-- Player Area -->
+            <div class="player-area player-area-self">
+                <div class="board player-board" id="playerBoard"></div>
+                <div class="hand player-hand" id="playerHand"></div>
+                <div class="player-info">
+                    <div class="player-name">Вы</div>
+                    <div class="stats">
+                        <span class="health">❤️ <span id="playerHealth">30</span></span>
+                        <span class="mana">💎 <span id="playerMana">0</span>/<span id="playerMaxMana">0</span></span>
+                        <span class="deck">📚 <span id="playerDeck">30</span></span>
+                    </div>
+                    <button id="endTurnBtn" class="btn btn-end-turn">Закончить Ход</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Game End Screen -->
+        <div id="endScreen" class="screen">
+            <div class="end-container">
+                <h1 id="endResult">Победа!</h1>
+                <p id="endMessage"></p>
+                <button id="playAgainBtn" class="btn btn-primary">Играть Снова</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="game.js"></script>
+</body>
+</html>
