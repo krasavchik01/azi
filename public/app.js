@@ -4,12 +4,24 @@ class AITherapistApp {
         this.token = localStorage.getItem('authToken');
         this.user = JSON.parse(localStorage.getItem('user') || 'null');
 
+        // Voice features
+        this.recognition = null;
+        this.synthesis = window.speechSynthesis;
+        this.isListening = false;
+        this.isSpeaking = false;
+        this.voiceEnabled = true;
+        this.isTextMode = false;
+
+        // Session
+        this.sessionStartTime = null;
+        this.sessionTimer = null;
+
         this.setupEventListeners();
+        this.initVoiceRecognition();
 
         // Check if logged in
         if (this.token && this.user) {
-            this.showChatScreen();
-            this.initSocket();
+            this.showWelcomeModal();
         }
     }
 
@@ -33,32 +45,78 @@ class AITherapistApp {
             this.register();
         });
 
-        // Chat events
+        // Video call controls
+        document.getElementById('startCallBtn').addEventListener('click', () => {
+            this.startCall();
+        });
+
+        document.getElementById('voiceBtn').addEventListener('click', () => {
+            this.toggleVoiceInput();
+        });
+
+        document.getElementById('toggleTextBtn').addEventListener('click', () => {
+            this.toggleTextMode();
+        });
+
+        document.getElementById('toggleVoiceBtn').addEventListener('click', () => {
+            this.toggleVoice();
+        });
+
+        document.getElementById('toggleChatBtn').addEventListener('click', () => {
+            this.toggleChat();
+        });
+
+        document.getElementById('toggleChat').addEventListener('click', () => {
+            this.toggleChat();
+        });
+
         document.getElementById('sendBtn').addEventListener('click', () => {
-            this.sendMessage();
+            this.sendTextMessage();
         });
 
-        document.getElementById('messageInput').addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                this.sendMessage();
+        document.getElementById('messageInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                this.sendTextMessage();
             }
-        });
-
-        document.getElementById('newChatBtn').addEventListener('click', () => {
-            this.newConversation();
         });
 
         document.getElementById('logoutBtn').addEventListener('click', () => {
             this.logout();
         });
+    }
 
-        // Auto-resize textarea
-        const textarea = document.getElementById('messageInput');
-        textarea.addEventListener('input', () => {
-            textarea.style.height = 'auto';
-            textarea.style.height = textarea.scrollHeight + 'px';
-        });
+    initVoiceRecognition() {
+        if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            this.recognition = new SpeechRecognition();
+            this.recognition.lang = 'ru-RU';
+            this.recognition.continuous = false;
+            this.recognition.interimResults = true;
+
+            this.recognition.onresult = (event) => {
+                const transcript = Array.from(event.results)
+                    .map(result => result[0])
+                    .map(result => result.transcript)
+                    .join('');
+
+                this.updateTranscription(transcript);
+
+                if (event.results[0].isFinal) {
+                    this.sendVoiceMessage(transcript);
+                }
+            };
+
+            this.recognition.onerror = (event) => {
+                console.error('Speech recognition error:', event.error);
+                this.stopListening();
+            };
+
+            this.recognition.onend = () => {
+                this.stopListening();
+            };
+        } else {
+            console.warn('Speech recognition not supported');
+        }
     }
 
     showRegisterForm() {
@@ -95,8 +153,7 @@ class AITherapistApp {
                 localStorage.setItem('authToken', this.token);
                 localStorage.setItem('user', JSON.stringify(this.user));
 
-                this.showChatScreen();
-                this.initSocket();
+                this.showWelcomeModal();
             } else {
                 alert(data.error || 'Ошибка входа');
             }
@@ -130,8 +187,7 @@ class AITherapistApp {
                 localStorage.setItem('authToken', this.token);
                 localStorage.setItem('user', JSON.stringify(this.user));
 
-                this.showChatScreen();
-                this.initSocket();
+                this.showWelcomeModal();
             } else {
                 alert(data.error || 'Ошибка регистрации');
             }
@@ -141,14 +197,38 @@ class AITherapistApp {
     }
 
     logout() {
+        if (this.synthesis) {
+            this.synthesis.cancel();
+        }
+        if (this.sessionTimer) {
+            clearInterval(this.sessionTimer);
+        }
         localStorage.removeItem('authToken');
         localStorage.removeItem('user');
         location.reload();
     }
 
-    showChatScreen() {
+    showWelcomeModal() {
         document.getElementById('authScreen').classList.remove('active');
         document.getElementById('chatScreen').classList.add('active');
+        document.getElementById('welcomeModal').classList.add('active');
+    }
+
+    startCall() {
+        document.getElementById('welcomeModal').classList.remove('active');
+        this.initSocket();
+        this.startSessionTimer();
+    }
+
+    startSessionTimer() {
+        this.sessionStartTime = Date.now();
+        this.sessionTimer = setInterval(() => {
+            const elapsed = Math.floor((Date.now() - this.sessionStartTime) / 1000);
+            const minutes = Math.floor(elapsed / 60);
+            const seconds = elapsed % 60;
+            document.getElementById('sessionTime').textContent =
+                `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+        }, 1000);
     }
 
     initSocket() {
@@ -171,59 +251,176 @@ class AITherapistApp {
 
         this.socket.on('message', (message) => {
             this.displayMessage(message);
-            this.hideTypingIndicator();
-        });
 
-        this.socket.on('conversationStarted', (data) => {
-            this.clearMessages();
+            // Speak the AI response
+            if (message.role === 'assistant' && this.voiceEnabled) {
+                this.speak(message.content);
+            }
         });
 
         this.socket.on('error', (data) => {
             alert(data.message);
-            this.hideTypingIndicator();
         });
     }
 
     loadConversation(conversation) {
-        this.clearMessages();
-
         if (conversation.messages && conversation.messages.length > 0) {
             conversation.messages.forEach(msg => {
                 this.displayMessage(msg, false);
             });
-            this.scrollToBottom();
         }
     }
 
-    clearMessages() {
-        const container = document.getElementById('messagesContainer');
-        // Remove all messages except welcome
-        const messages = container.querySelectorAll('.message, .typing-indicator');
-        messages.forEach(msg => msg.remove());
+    toggleVoiceInput() {
+        if (!this.recognition) {
+            alert('Распознавание речи не поддерживается вашим браузером');
+            return;
+        }
+
+        if (this.isListening) {
+            this.stopListening();
+        } else {
+            this.startListening();
+        }
     }
 
-    sendMessage() {
+    startListening() {
+        if (this.isSpeaking) {
+            this.synthesis.cancel();
+        }
+
+        this.isListening = true;
+        document.getElementById('voiceBtn').classList.add('active');
+        document.querySelector('#voiceBtn .label').textContent = 'Слушаю...';
+        document.getElementById('transcription').classList.add('active');
+
+        this.recognition.start();
+        this.animateMouth(true);
+    }
+
+    stopListening() {
+        this.isListening = false;
+        document.getElementById('voiceBtn').classList.remove('active');
+        document.querySelector('#voiceBtn .label').textContent = 'Нажми и говори';
+        document.getElementById('transcription').classList.remove('active');
+
+        this.animateMouth(false);
+    }
+
+    updateTranscription(text) {
+        document.getElementById('transcriptionText').textContent = text;
+    }
+
+    sendVoiceMessage(transcript) {
+        if (!transcript.trim() || !this.socket) return;
+
+        this.socket.emit('sendMessage', { content: transcript });
+        this.updateTranscription('Обрабатываю...');
+    }
+
+    sendTextMessage() {
         const input = document.getElementById('messageInput');
         const content = input.value.trim();
 
         if (!content || !this.socket) return;
 
         input.value = '';
-        input.style.height = 'auto';
-
-        // Send to server
         this.socket.emit('sendMessage', { content });
+    }
 
-        // Show typing indicator
-        this.showTypingIndicator();
+    speak(text) {
+        if (!this.synthesis || !this.voiceEnabled) return;
+
+        // Cancel any ongoing speech
+        this.synthesis.cancel();
+
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = 'ru-RU';
+        utterance.rate = 0.9;
+        utterance.pitch = 1.1;
+
+        // Find Russian voice if available
+        const voices = this.synthesis.getVoices();
+        const russianVoice = voices.find(voice => voice.lang.startsWith('ru'));
+        if (russianVoice) {
+            utterance.voice = russianVoice;
+        }
+
+        utterance.onstart = () => {
+            this.isSpeaking = true;
+            this.showSpeakingIndicator(true);
+            this.animateMouth(true);
+        };
+
+        utterance.onend = () => {
+            this.isSpeaking = false;
+            this.showSpeakingIndicator(false);
+            this.animateMouth(false);
+        };
+
+        this.synthesis.speak(utterance);
+    }
+
+    animateMouth(talking) {
+        const mouth = document.getElementById('mouth');
+        if (talking) {
+            mouth.classList.add('talking');
+        } else {
+            mouth.classList.remove('talking');
+        }
+    }
+
+    showSpeakingIndicator(show) {
+        const indicator = document.getElementById('speakingIndicator');
+        if (show) {
+            indicator.classList.add('active');
+        } else {
+            indicator.classList.remove('active');
+        }
+    }
+
+    toggleTextMode() {
+        this.isTextMode = !this.isTextMode;
+
+        const voiceBtn = document.getElementById('voiceBtn');
+        const textContainer = document.getElementById('textInputContainer');
+        const toggleBtn = document.getElementById('toggleTextBtn');
+
+        if (this.isTextMode) {
+            voiceBtn.style.display = 'none';
+            textContainer.style.display = 'flex';
+            toggleBtn.style.background = 'rgba(102, 126, 234, 0.3)';
+        } else {
+            voiceBtn.style.display = 'flex';
+            textContainer.style.display = 'none';
+            toggleBtn.style.background = 'rgba(255, 255, 255, 0.1)';
+        }
+    }
+
+    toggleVoice() {
+        this.voiceEnabled = !this.voiceEnabled;
+
+        const btn = document.getElementById('toggleVoiceBtn');
+
+        if (this.voiceEnabled) {
+            btn.textContent = '🔊';
+            btn.classList.remove('muted');
+        } else {
+            btn.textContent = '🔇';
+            btn.classList.add('muted');
+            if (this.synthesis) {
+                this.synthesis.cancel();
+            }
+        }
+    }
+
+    toggleChat() {
+        const overlay = document.getElementById('chatOverlay');
+        overlay.classList.toggle('open');
     }
 
     displayMessage(message, animate = true) {
         const container = document.getElementById('messagesContainer');
-
-        // Remove welcome message if exists
-        const welcome = container.querySelector('.welcome-message');
-        if (welcome) welcome.remove();
 
         const messageEl = document.createElement('div');
         messageEl.className = `message ${message.role === 'user' ? 'user' : 'ai'}`;
@@ -246,49 +443,23 @@ class AITherapistApp {
         messageEl.appendChild(bubble);
 
         container.appendChild(messageEl);
-        this.scrollToBottom();
+        this.scrollChatToBottom();
     }
 
-    showTypingIndicator() {
-        const container = document.getElementById('messagesContainer');
-
-        let indicator = container.querySelector('.typing-indicator');
-        if (!indicator) {
-            indicator = document.createElement('div');
-            indicator.className = 'typing-indicator';
-            indicator.innerHTML = `
-                <div class="typing-dot"></div>
-                <div class="typing-dot"></div>
-                <div class="typing-dot"></div>
-            `;
-            container.appendChild(indicator);
-        }
-
-        indicator.classList.add('active');
-        this.scrollToBottom();
-    }
-
-    hideTypingIndicator() {
-        const indicator = document.querySelector('.typing-indicator');
-        if (indicator) {
-            indicator.classList.remove('active');
-        }
-    }
-
-    scrollToBottom() {
+    scrollChatToBottom() {
         const container = document.getElementById('messagesContainer');
         setTimeout(() => {
             container.scrollTop = container.scrollHeight;
         }, 100);
     }
-
-    newConversation() {
-        if (confirm('Начать новый разговор? Текущий будет сохранён.')) {
-            this.socket.emit('newConversation');
-            this.clearMessages();
-        }
-    }
 }
 
 // Initialize app
 const app = new AITherapistApp();
+
+// Load voices when available
+if ('speechSynthesis' in window) {
+    window.speechSynthesis.onvoiceschanged = () => {
+        console.log('Voices loaded:', window.speechSynthesis.getVoices().length);
+    };
+}
