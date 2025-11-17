@@ -194,37 +194,31 @@ body {
     width: 100%;
     height: 100%;
     border-radius: 50%;
-    background: linear-gradient(135deg, #ffd6e8 0%, #ffc2d1 100%);
+    background: linear-gradient(135deg, #ffe5f0 0%, #ffc9e0 50%, #ffb3d9 100%);
     display: flex;
     align-items: center;
     justify-content: center;
-    overflow: hidden;
+    overflow: visible;
     position: relative;
-    background-image: url('https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=800&h=800&fit=crop&crop=faces');
-    background-size: 110% 110%;
-    background-position: center center;
     animation: breathing 4s ease-in-out infinite;
+    box-shadow: inset 0 0 60px rgba(255, 200, 220, 0.5);
 }
 
 @keyframes breathing {
     0%, 100% {
-        background-size: 110% 110%;
+        transform: scale(1);
     }
     50% {
-        background-size: 115% 115%;
+        transform: scale(1.02);
     }
 }
 
-/* Animated Face - overlay над изображением */
+/* Animated Face */
 .avatar-face {
     width: 100%;
     height: 100%;
-    position: absolute;
-    top: 0;
-    left: 0;
+    position: relative;
     pointer-events: none;
-    mix-blend-mode: overlay;
-    opacity: 0;
 }
 
 .eyes {
@@ -233,28 +227,40 @@ body {
     left: 50%;
     transform: translateX(-50%);
     display: flex;
-    gap: 60px;
+    gap: 70px;
 }
 
 .eye {
-    width: 40px;
-    height: 40px;
+    width: 50px;
+    height: 50px;
     background: white;
     border-radius: 50%;
     position: relative;
-    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+    border: 2px solid #ffb3d9;
 }
 
 .pupil {
-    width: 20px;
-    height: 20px;
-    background: #2d3748;
+    width: 24px;
+    height: 24px;
+    background: radial-gradient(circle at 30% 30%, #4a5568, #1a202c);
     border-radius: 50%;
     position: absolute;
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
     animation: blink 4s infinite;
+}
+
+.pupil::after {
+    content: '';
+    position: absolute;
+    width: 8px;
+    height: 8px;
+    background: white;
+    border-radius: 50%;
+    top: 6px;
+    left: 6px;
 }
 
 @keyframes blink {
@@ -266,34 +272,59 @@ body {
     }
 }
 
-.mouth {
+/* Nose */
+.nose {
     position: absolute;
-    bottom: 30%;
+    top: 52%;
     left: 50%;
     transform: translateX(-50%);
-    width: 80px;
-    height: 40px;
+    width: 20px;
+    height: 25px;
+    background: linear-gradient(to bottom, transparent 0%, rgba(255, 179, 217, 0.4) 50%, transparent 100%);
+    border-radius: 50%;
+}
+
+.mouth {
+    position: absolute;
+    bottom: 28%;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 100px;
+    height: 50px;
 }
 
 .smile {
     width: 100%;
     height: 100%;
-    border: 4px solid #ff6b9d;
+    border: 6px solid #ff3366;
     border-top: none;
-    border-radius: 0 0 80px 80px;
-    transition: all 0.3s;
+    border-radius: 0 0 100px 100px;
+    background: linear-gradient(to bottom, transparent 0%, rgba(255, 51, 102, 0.2) 100%);
+    box-shadow: inset 0 -5px 15px rgba(255, 51, 102, 0.3);
+    transition: all 0.15s ease-in-out;
 }
 
 .mouth.talking .smile {
-    animation: talk 0.3s infinite;
+    animation: talk 0.2s ease-in-out infinite;
+    border-color: #ff1a4d;
 }
 
 @keyframes talk {
-    0%, 100% {
-        height: 40px;
+    0% {
+        height: 50px;
+        border-radius: 0 0 100px 100px;
+        transform: scaleY(1);
     }
     50% {
+        height: 65px;
+        border-radius: 0 0 120px 120px;
+        transform: scaleY(1.1);
+        border-width: 7px;
+    }
+    100% {
         height: 50px;
+        border-radius: 0 0 100px 100px;
+        transform: scaleY(1);
     }
 }
 
