@@ -9,6 +9,7 @@ require('dotenv').config();
 const User = require('./models/User');
 const Conversation = require('./models/Conversation');
 const aiTherapist = require('./services/AITherapist');
+const voiceService = require('./services/VoiceService');
 
 const app = express();
 const server = http.createServer(app);
@@ -78,6 +79,36 @@ app.get('/api/user/profile', authenticateToken, async (req, res) => {
         }
     } catch (error) {
         res.status(500).json({ error: error.message });
+    }
+});
+
+// Voice generation endpoint
+app.post('/api/voice/generate', async (req, res) => {
+    try {
+        const { text } = req.body;
+
+        if (!text) {
+            return res.status(400).json({ error: 'Text required' });
+        }
+
+        const result = await voiceService.textToSpeech(text);
+
+        if (result.success) {
+            res.json({
+                success: true,
+                audio: result.audio,
+                contentType: result.contentType
+            });
+        } else {
+            res.json({
+                success: false,
+                useBrowserTTS: true
+            });
+        }
+
+    } catch (error) {
+        console.error('Voice generation error:', error);
+        res.status(500).json({ error: error.message, useBrowserTTS: true });
     }
 });
 

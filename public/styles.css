@@ -162,7 +162,8 @@ body {
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     padding: 8px;
     box-shadow: 0 20px 60px rgba(102, 126, 234, 0.4);
-    animation: avatarPulse 3s ease-in-out infinite;
+    animation: avatarPulse 3s ease-in-out infinite, subtleMove 8s ease-in-out infinite;
+    transition: transform 0.3s ease;
 }
 
 @keyframes avatarPulse {
@@ -171,6 +172,21 @@ body {
     }
     50% {
         box-shadow: 0 25px 80px rgba(102, 126, 234, 0.6);
+    }
+}
+
+@keyframes subtleMove {
+    0%, 100% {
+        transform: translateY(0px) rotate(0deg) scale(1);
+    }
+    25% {
+        transform: translateY(-8px) rotate(1deg) scale(1.01);
+    }
+    50% {
+        transform: translateY(0px) rotate(0deg) scale(1);
+    }
+    75% {
+        transform: translateY(-5px) rotate(-0.5deg) scale(1.005);
     }
 }
 
@@ -185,8 +201,18 @@ body {
     overflow: hidden;
     position: relative;
     background-image: url('https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=800&h=800&fit=crop&crop=faces');
-    background-size: cover;
-    background-position: center;
+    background-size: 110% 110%;
+    background-position: center center;
+    animation: breathing 4s ease-in-out infinite;
+}
+
+@keyframes breathing {
+    0%, 100% {
+        background-size: 110% 110%;
+    }
+    50% {
+        background-size: 115% 115%;
+    }
 }
 
 /* Animated Face - overlay над изображением */

@@ -318,8 +318,68 @@ class AITherapistApp {
         this.socket.emit('sendMessage', { content });
     }
 
-    speak(text) {
-        if (!this.synthesis || !this.voiceEnabled) return;
+    async speak(text) {
+        if (!this.voiceEnabled) return;
+
+        // Try ElevenLabs first for better quality
+        try {
+            const response = await fetch('/api/voice/generate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text })
+            });
+
+            const data = await response.json();
+
+            if (data.success && data.audio) {
+                // Use ElevenLabs high-quality voice
+                console.log('🎙️ Используется ElevenLabs voice');
+                await this.playAudioBase64(data.audio);
+                return;
+            }
+        } catch (error) {
+            console.warn('ElevenLabs недоступен, используется браузерный TTS:', error.message);
+        }
+
+        // Fallback to browser TTS
+        this.speakBrowserTTS(text);
+    }
+
+    async playAudioBase64(base64Audio) {
+        return new Promise((resolve, reject) => {
+            this.isSpeaking = true;
+            this.showSpeakingIndicator(true);
+            this.animateMouth(true);
+
+            const audio = new Audio(`data:audio/mpeg;base64,${base64Audio}`);
+
+            audio.onended = () => {
+                this.isSpeaking = false;
+                this.showSpeakingIndicator(false);
+                this.animateMouth(false);
+                resolve();
+            };
+
+            audio.onerror = (error) => {
+                console.error('Audio playback error:', error);
+                this.isSpeaking = false;
+                this.showSpeakingIndicator(false);
+                this.animateMouth(false);
+                reject(error);
+            };
+
+            audio.play().catch(error => {
+                console.error('Play error:', error);
+                this.isSpeaking = false;
+                this.showSpeakingIndicator(false);
+                this.animateMouth(false);
+                reject(error);
+            });
+        });
+    }
+
+    speakBrowserTTS(text) {
+        if (!this.synthesis) return;
 
         // Cancel any ongoing speech
         this.synthesis.cancel();
@@ -341,7 +401,7 @@ class AITherapistApp {
 
         if (russianVoice) {
             utterance.voice = russianVoice;
-            console.log('Используется голос:', russianVoice.name);
+            console.log('🔊 Используется браузерный голос:', russianVoice.name);
         }
 
         utterance.onstart = () => {
