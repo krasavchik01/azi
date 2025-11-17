@@ -178,19 +178,27 @@ body {
     width: 100%;
     height: 100%;
     border-radius: 50%;
-    background: radial-gradient(circle at 30% 30%, #ffd6e8, #ffc2d1);
+    background: linear-gradient(135deg, #ffd6e8 0%, #ffc2d1 100%);
     display: flex;
     align-items: center;
     justify-content: center;
     overflow: hidden;
     position: relative;
+    background-image: url('https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=800&h=800&fit=crop&crop=faces');
+    background-size: cover;
+    background-position: center;
 }
 
-/* Animated Face */
+/* Animated Face - overlay над изображением */
 .avatar-face {
     width: 100%;
     height: 100%;
-    position: relative;
+    position: absolute;
+    top: 0;
+    left: 0;
+    pointer-events: none;
+    mix-blend-mode: overlay;
+    opacity: 0;
 }
 
 .eyes {

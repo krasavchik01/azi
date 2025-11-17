@@ -181,24 +181,36 @@ class AITherapistApp {
     }
 
     initSocket() {
+        console.log('Инициализация сокета...');
         this.socket = io();
 
         this.socket.on('connect', () => {
-            console.log('Connected to server');
+            console.log('✅ Подключено к серверу');
+            console.log('Отправка токена:', this.token ? 'есть' : 'нет');
             this.socket.emit('authenticate', this.token);
         });
 
         this.socket.on('authenticated', (data) => {
+            console.log('Ответ аутентификации:', data);
             if (data.success) {
-                console.log('Authenticated');
+                console.log('✅ Аутентификация успешна');
                 this.loadConversation(data.conversation);
             } else {
-                alert('Ошибка аутентификации');
-                this.logout();
+                console.error('❌ Ошибка аутентификации:', data.error);
+                alert('Ошибка подключения. Попробуй еще раз!');
+                // Не делаем logout, чтобы не потерять данные
+                // Попробуем переподключиться
+                setTimeout(() => {
+                    if (this.token) {
+                        console.log('Повторная попытка аутентификации...');
+                        this.socket.emit('authenticate', this.token);
+                    }
+                }, 2000);
             }
         });
 
         this.socket.on('message', (message) => {
+            console.log('📨 Получено сообщение:', message.role);
             this.displayMessage(message);
 
             // Speak the AI response
@@ -208,7 +220,16 @@ class AITherapistApp {
         });
 
         this.socket.on('error', (data) => {
-            alert(data.message);
+            console.error('Socket error:', data);
+            alert(data.message || 'Произошла ошибка');
+        });
+
+        this.socket.on('disconnect', () => {
+            console.warn('⚠️ Отключено от сервера');
+        });
+
+        this.socket.on('connect_error', (error) => {
+            console.error('Ошибка подключения:', error);
         });
     }
 
@@ -261,8 +282,18 @@ class AITherapistApp {
     }
 
     sendVoiceMessage(transcript) {
-        if (!transcript.trim() || !this.socket) return;
+        if (!transcript.trim()) {
+            console.warn('Пустое сообщение, не отправляю');
+            return;
+        }
 
+        if (!this.socket || !this.socket.connected) {
+            console.error('❌ Сокет не подключен!');
+            alert('Нет связи с сервером. Подожди немного...');
+            return;
+        }
+
+        console.log('📤 Отправка голосового сообщения:', transcript);
         this.socket.emit('sendMessage', { content: transcript });
         this.updateTranscription('Обрабатываю...');
     }
@@ -271,8 +302,18 @@ class AITherapistApp {
         const input = document.getElementById('messageInput');
         const content = input.value.trim();
 
-        if (!content || !this.socket) return;
+        if (!content) {
+            console.warn('Пустое сообщение');
+            return;
+        }
 
+        if (!this.socket || !this.socket.connected) {
+            console.error('❌ Сокет не подключен!');
+            alert('Нет связи с сервером. Подожди немного...');
+            return;
+        }
+
+        console.log('📤 Отправка текстового сообщения:', content);
         input.value = '';
         this.socket.emit('sendMessage', { content });
     }
@@ -285,14 +326,22 @@ class AITherapistApp {
 
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.lang = 'ru-RU';
-        utterance.rate = 0.9;
-        utterance.pitch = 1.1;
+        utterance.rate = 1.05; // Чуть быстрее для живости
+        utterance.pitch = 1.2; // Более высокий женский голос
+        utterance.volume = 1.0;
 
-        // Find Russian voice if available
+        // Find best Russian female voice
         const voices = this.synthesis.getVoices();
-        const russianVoice = voices.find(voice => voice.lang.startsWith('ru'));
+
+        // Приоритет: Google русский, потом Yandex, потом любой русский женский
+        const russianVoice = voices.find(voice =>
+            voice.lang.startsWith('ru') &&
+            (voice.name.includes('Google') || voice.name.includes('Female') || voice.name.includes('женский'))
+        ) || voices.find(voice => voice.lang.startsWith('ru'));
+
         if (russianVoice) {
             utterance.voice = russianVoice;
+            console.log('Используется голос:', russianVoice.name);
         }
 
         utterance.onstart = () => {
@@ -302,6 +351,13 @@ class AITherapistApp {
         };
 
         utterance.onend = () => {
+            this.isSpeaking = false;
+            this.showSpeakingIndicator(false);
+            this.animateMouth(false);
+        };
+
+        utterance.onerror = (event) => {
+            console.error('Speech error:', event);
             this.isSpeaking = false;
             this.showSpeakingIndicator(false);
             this.animateMouth(false);
