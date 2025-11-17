@@ -173,11 +173,15 @@ socket.on('error', callback)
 - [x] Mood analysis
 - [x] Beautiful modern UI
 - [x] Database persistence
+- [x] 🎥 Video call interface with animated avatar
+- [x] 🎤 Voice input (Speech Recognition)
+- [x] 🔊 Text-to-speech for AI responses
+- [x] 🗣️ Synchronized mouth animations
+- [x] 💬 Dual mode: voice & text
 
 ### 🚧 В Планах
 - [ ] Stripe интеграция для подписок
 - [ ] Аналитика настроения (графики)
-- [ ] Голосовые сообщения
 - [ ] Мобильное приложение (React Native)
 - [ ] Персональные техники и упражнения
 - [ ] Уведомления и напоминания
@@ -207,17 +211,37 @@ socket.on('error', callback)
 
 ## 🌍 Деплой
 
+### 🚂 Railway.app (Рекомендуется - 1 клик!)
+
+**Быстрый деплой:**
+1. Перейдите на [railway.app](https://railway.app/)
+2. Нажмите "Start a New Project" → "Deploy from GitHub repo"
+3. Выберите репозиторий `krasavchik01/azi`
+4. Добавьте переменные окружения:
+   - `ANTHROPIC_API_KEY` - ваш ключ от Anthropic
+   - `JWT_SECRET` - любая случайная строка
+   - `PORT` - 3000
+5. Deploy! Получите URL типа `https://your-app.up.railway.app`
+
+**Бесплатный план:** 500 часов/месяц
+
+### 🎨 Render.com (Альтернатива)
+
+1. Перейдите на [render.com](https://render.com/)
+2. Создайте "Web Service" из GitHub
+3. Выберите репозиторий, настройте переменные
+4. Deploy!
+
+**Бесплатный план:** 750 часов/месяц
+
+📖 **Подробная инструкция:** см. [DEPLOY.md](./DEPLOY.md)
+
 ### Heroku
 ```bash
 heroku create ai-therapist
 heroku config:set ANTHROPIC_API_KEY=sk-ant-...
 git push heroku main
 ```
-
-### Vercel/Railway
-- Импортируйте репозиторий
-- Добавьте env variables
-- Deploy!
 
 ## 📊 Производительность
 
