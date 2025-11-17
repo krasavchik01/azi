@@ -11,6 +11,7 @@ class AITherapistApp {
         this.isSpeaking = false;
         this.voiceEnabled = true;
         this.isTextMode = false;
+        this.speechSupported = false;
 
         // Session
         this.sessionStartTime = null;
@@ -19,37 +20,26 @@ class AITherapistApp {
         this.setupEventListeners();
         this.initVoiceRecognition();
 
-        // Check if logged in
+        // Check if logged in - auto start call
         if (this.token && this.user) {
-            this.showWelcomeModal();
+            this.startApp();
         }
     }
 
     setupEventListeners() {
-        // Auth events
-        document.getElementById('showRegister').addEventListener('click', (e) => {
-            e.preventDefault();
-            this.showRegisterForm();
-        });
-
-        document.getElementById('showLogin').addEventListener('click', (e) => {
-            e.preventDefault();
-            this.showLoginForm();
-        });
-
-        document.getElementById('loginBtn').addEventListener('click', () => {
-            this.login();
-        });
-
+        // Simple registration
         document.getElementById('registerBtn').addEventListener('click', () => {
             this.register();
         });
 
-        // Video call controls
-        document.getElementById('startCallBtn').addEventListener('click', () => {
-            this.startCall();
+        // Enter key on name input
+        document.getElementById('registerName').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                this.register();
+            }
         });
 
+        // Video call controls
         document.getElementById('voiceBtn').addEventListener('click', () => {
             this.toggleVoiceInput();
         });
@@ -87,6 +77,7 @@ class AITherapistApp {
 
     initVoiceRecognition() {
         if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+            this.speechSupported = true;
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             this.recognition = new SpeechRecognition();
             this.recognition.lang = 'ru-RU';
@@ -115,60 +106,16 @@ class AITherapistApp {
                 this.stopListening();
             };
         } else {
-            console.warn('Speech recognition not supported');
-        }
-    }
-
-    showRegisterForm() {
-        document.getElementById('loginForm').style.display = 'none';
-        document.getElementById('registerForm').style.display = 'flex';
-    }
-
-    showLoginForm() {
-        document.getElementById('registerForm').style.display = 'none';
-        document.getElementById('loginForm').style.display = 'flex';
-    }
-
-    async login() {
-        const email = document.getElementById('loginEmail').value.trim();
-        const password = document.getElementById('loginPassword').value;
-
-        if (!email || !password) {
-            alert('Заполните все поля');
-            return;
-        }
-
-        try {
-            const response = await fetch('/api/auth/login', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email, password })
-            });
-
-            const data = await response.json();
-
-            if (data.success) {
-                this.token = data.token;
-                this.user = data.user;
-                localStorage.setItem('authToken', this.token);
-                localStorage.setItem('user', JSON.stringify(this.user));
-
-                this.showWelcomeModal();
-            } else {
-                alert(data.error || 'Ошибка входа');
-            }
-        } catch (error) {
-            alert('Ошибка соединения');
+            this.speechSupported = false;
+            console.warn('Speech recognition not supported - будет использован текстовый режим');
         }
     }
 
     async register() {
         const name = document.getElementById('registerName').value.trim();
-        const email = document.getElementById('registerEmail').value.trim();
-        const password = document.getElementById('registerPassword').value;
 
-        if (!name || !email || !password) {
-            alert('Заполните все поля');
+        if (!name) {
+            alert('Введи своё имя 😊');
             return;
         }
 
@@ -176,7 +123,7 @@ class AITherapistApp {
             const response = await fetch('/api/auth/register', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name, email, password })
+                body: JSON.stringify({ name })
             });
 
             const data = await response.json();
@@ -187,13 +134,27 @@ class AITherapistApp {
                 localStorage.setItem('authToken', this.token);
                 localStorage.setItem('user', JSON.stringify(this.user));
 
-                this.showWelcomeModal();
+                this.startApp();
             } else {
                 alert(data.error || 'Ошибка регистрации');
             }
         } catch (error) {
             alert('Ошибка соединения');
         }
+    }
+
+    startApp() {
+        document.getElementById('authScreen').classList.remove('active');
+        document.getElementById('chatScreen').classList.add('active');
+
+        // Auto switch to text mode if speech not supported
+        if (!this.speechSupported) {
+            this.isTextMode = true;
+            setTimeout(() => this.toggleTextMode(), 500);
+        }
+
+        this.initSocket();
+        this.startSessionTimer();
     }
 
     logout() {
@@ -206,18 +167,6 @@ class AITherapistApp {
         localStorage.removeItem('authToken');
         localStorage.removeItem('user');
         location.reload();
-    }
-
-    showWelcomeModal() {
-        document.getElementById('authScreen').classList.remove('active');
-        document.getElementById('chatScreen').classList.add('active');
-        document.getElementById('welcomeModal').classList.add('active');
-    }
-
-    startCall() {
-        document.getElementById('welcomeModal').classList.remove('active');
-        this.initSocket();
-        this.startSessionTimer();
     }
 
     startSessionTimer() {
@@ -273,7 +222,7 @@ class AITherapistApp {
 
     toggleVoiceInput() {
         if (!this.recognition) {
-            alert('Распознавание речи не поддерживается вашим браузером');
+            alert('Голосовой ввод не поддерживается вашим браузером 😔\nИспользуйте кнопку ⌨️ для текстового режима');
             return;
         }
 

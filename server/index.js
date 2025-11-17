@@ -29,81 +29,35 @@ if (process.env.MONGODB_URI) {
 const sessions = new Map();
 const userConversations = new Map();
 
-// Auth Routes
+// Auth Routes - Simplified (только имя)
 app.post('/api/auth/register', async (req, res) => {
     try {
-        const { email, password, name } = req.body;
+        const { name } = req.body;
 
-        // Check if using DB
-        if (mongoose.connection.readyState === 1) {
-            const existingUser = await User.findOne({ email });
-            if (existingUser) {
-                return res.status(400).json({ error: 'Email уже зарегистрирован' });
-            }
-
-            const user = await User.create({ email, password, name });
-            const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET || 'secret', { expiresIn: '30d' });
-
-            res.json({
-                success: true,
-                token,
-                user: {
-                    id: user._id,
-                    name: user.name,
-                    email: user.email,
-                    subscription: user.subscription
-                }
-            });
-        } else {
-            // In-memory fallback
-            const userId = Date.now().toString();
-            const user = { id: userId, email, name, subscription: 'free' };
-            sessions.set(userId, user);
-
-            const token = jwt.sign({ userId }, 'secret', { expiresIn: '30d' });
-            res.json({ success: true, token, user });
+        if (!name || name.trim().length === 0) {
+            return res.status(400).json({ error: 'Введите ваше имя' });
         }
+
+        // Always use in-memory storage for simplicity
+        const userId = Date.now().toString();
+        const email = `${userId}@temp.local`; // Auto-generate temporary email
+        const user = { id: userId, email, name: name.trim(), subscription: 'free' };
+        sessions.set(userId, user);
+
+        const token = jwt.sign({ userId }, process.env.JWT_SECRET || 'secret', { expiresIn: '30d' });
+
+        res.json({
+            success: true,
+            token,
+            user
+        });
+
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-app.post('/api/auth/login', async (req, res) => {
-    try {
-        const { email, password } = req.body;
-
-        if (mongoose.connection.readyState === 1) {
-            const user = await User.findOne({ email });
-            if (!user || !(await user.comparePassword(password))) {
-                return res.status(401).json({ error: 'Неверный email или пароль' });
-            }
-
-            const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET || 'secret', { expiresIn: '30d' });
-
-            res.json({
-                success: true,
-                token,
-                user: {
-                    id: user._id,
-                    name: user.name,
-                    email: user.email,
-                    subscription: user.subscription
-                }
-            });
-        } else {
-            // Simple fallback login
-            const user = Array.from(sessions.values()).find(u => u.email === email);
-            if (!user) {
-                return res.status(401).json({ error: 'Пользователь не найден' });
-            }
-
-            const token = jwt.sign({ userId: user.id }, 'secret', { expiresIn: '30d' });
-            res.json({ success: true, token, user });
-        }
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
+// Login removed - only simple registration by name
 
 // Get user profile
 app.get('/api/user/profile', authenticateToken, async (req, res) => {
