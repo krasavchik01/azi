@@ -1,0 +1,16 @@
+export const COLORS = {
+  darkBg: "#0a1628",
+  deepBlue: "#0d2137",
+  accentGreen: "#00d68f",
+  accentBlue: "#3366ff",
+  accentTeal: "#00c9a7",
+  lightText: "#ffffff",
+  subtleText: "#8f9bb3",
+  cardBg: "rgba(255,255,255,0.06)",
+  cardBorder: "rgba(255,255,255,0.1)",
+  gradientGreen: "linear-gradient(135deg, #00d68f, #00c9a7)",
+  gradientBlue: "linear-gradient(135deg, #3366ff, #598bff)",
+  envGreen: "#00d68f",
+  socialBlue: "#3366ff",
+  govPurple: "#9b59b6",
+};
